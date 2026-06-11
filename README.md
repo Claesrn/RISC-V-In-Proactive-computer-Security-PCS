@@ -61,13 +61,12 @@ checksec --file={FILE}
 
 ```bash
 # Stack attack — overflow benign_function() and jump to win()
-rv32-gcc -static -fno-stack-protector examples/stack/vuln.c -o vuln
-python3 examples/stack/exploit.py ./vuln
+rv32-gcc -fno-stack-protector examples/stack/vuln.c -o vuln
+python3 examples/stack/exploit.py 
 
 # ROP chain — build execve("/bin/sh", NULL, NULL)
-rv32-gcc -static -fno-stack-protector examples/rop/vuln.c -o vuln
-ROPgadget --binary vuln > vuln.gadgets
-python3 examples/rop/exploit.py ./vuln
+rv32-gcc -fno-stack-protector examples/rop/vuln.c -o vuln
+python3 examples/rop/exploit.py
 ```
 
 ## Layout
