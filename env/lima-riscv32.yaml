@@ -1,0 +1,247 @@
+---
+# Lima configuration for PCS-F2026 VM (RISC-V 32-bit / rv32 variant)
+# $ limactl start ./pcs-f2026-rv32.yaml
+# $ limactl shell pcs-f2026-rv32
+
+arch: "x86_64"
+vmType: "qemu"
+mountType: "9p"
+
+firmware:
+  legacyBIOS: true
+# Image is set to Ubuntu 22.04 LTS (Jammy Jellyfish)
+images:
+  # Try to use release-yyyyMMdd image if available. Note that release-yyyyMMdd will be removed after several months.
+  - location: "https://cloud-images.ubuntu.com/releases/22.04/release-20250327/ubuntu-22.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+    digest: "sha256:989151e612cde6876b0ef9fbc8051c0e22c32c59dd51cbac2b8691fbb79c399a"
+  - location: "https://cloud-images.ubuntu.com/releases/22.04/release-20250327/ubuntu-22.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+    digest: "sha256:3b3d0a0185bab803ee6705eccd39403cdc35ee543ea5118dd53ffe68d2b82733"
+  # Fallback to the latest release image.
+  # Hint: run `limactl prune` to invalidate the cache
+  - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+
+# Mounts. Make your pcs-f2026 folder writable
+mounts:
+  - location: "" # UPDATE TO MATCH YOUR PATH
+    writable: true
+    9p:
+      msize: "100MiB"
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -xe
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -qq update
+      # apt-get -qq upgrade -y
+      apt-get -qq install -y apt-transport-https ca-certificates curl \
+              software-properties-common \
+              nasm zip strace binutils build-essential \
+              gdb gdb-doc gdbserver \
+              manpages-posix-dev manpages-posix \
+              vim emacs-nox nano bash-completion git file \
+              python3-dev python3-pip  \
+              curl wget clang xz-utils \
+              sl lolcat socat cowsay cowsay-off filters bsdgames \
+              afl++ afl++-doc checksec \
+              qemu-user-static gdb-multiarch
+              pip3 install -U ROPgadget 'capstone>=5.0,<6.0'
+      # If we want GDB to be able to attach to an other process we
+      # need to switch off some kernel hardening.
+      # We do this by changing the ptrace scope from one to zero
+      sed -i 's/kernel.yama.ptrace_scope = 1/kernel.yama.ptrace_scope = 0/' /etc/sysctl.d/10-ptrace.conf
+
+      # We then need to restart the relevant service
+      sysctl -p /etc/sysctl.d/10-ptrace.conf
+
+      # Disable Canonical phone-home motd
+      sed -i 's/ENABLED=1/ENABLED=0/' /etc/default/motd-news
+
+      # Install RV32
+      echo Installing RISC-V 32-bit glibc cross toolchain
+      RV32_DIR=/opt/riscv32
+      mkdir -p "$RV32_DIR"
+      RV32_URL="https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2026.06.06/riscv32-glibc-ubuntu-22.04-gcc.tar.xz"
+      echo "Downloading $RV32_URL"
+      curl -fL --retry 3 --retry-delay 5 "$RV32_URL" -o /tmp/rv32-toolchain.tar.xz
+      tar -xJf /tmp/rv32-toolchain.tar.xz -C "$RV32_DIR"
+      rm -f /tmp/rv32-toolchain.tar.xz
+      # Figure out where inside /opt/riscv32 the toolchain ended up, and set up environment variables accordingly.
+      RV32_GCC=$(find "$RV32_DIR" -type f -name 'riscv32-*-gcc' | head -1)
+      if [ -z "$RV32_GCC" ]; then
+        echo "ERROR: rv32 gcc not found after extracting the toolchain." >&2
+        exit 1
+      fi
+      RV32_BIN=$(dirname "$RV32_GCC")
+      RV32_SYSROOT=$("$RV32_GCC" -print-sysroot)
+      echo "rv32 toolchain installed: $RV32_GCC (sysroot: $RV32_SYSROOT)"
+      # Put the toolchain on PATH so binariess can be invoked as rv32-gcc, rv32-objdump, etc. in the current shell.
+      echo "export PATH=$RV32_BIN:\$PATH" > /etc/profile.d/riscv32.sh
+      export PATH="$RV32_BIN:$PATH"
+      # Make DYNAMICALLY-linked rv32 binaries runnable via binfmt (./prog)
+      sed -i '/^QEMU_LD_PREFIX=/d' /etc/environment
+      echo "QEMU_LD_PREFIX=$RV32_SYSROOT" >> /etc/environment
+      echo "export QEMU_LD_PREFIX=$RV32_SYSROOT" >> /etc/profile.d/riscv32.sh
+      export QEMU_LD_PREFIX="$RV32_SYSROOT"
+
+      # Create short, intuitive aliases: rv32-gcc, rv32-objdump, rv32-as, rv32-ld,
+      # rv32-objcopy, rv32-readelf, ... instead of riscv32-unknown-linux-gnu-*.
+      echo Creating rv32-* command aliases
+      RV32_PREFIX=$(basename "$RV32_GCC")
+      RV32_PREFIX=${RV32_PREFIX%gcc}
+      for f in "$RV32_BIN/${RV32_PREFIX}"*; do
+        [ -e "$f" ] || continue
+        tool=$(basename "$f")
+        tool=${tool#"$RV32_PREFIX"}
+        ln -sf "$f" "/usr/local/bin/rv32-$tool"
+      done
+
+      # compile and install runshellcode tool, a PCS specific program for running shellcode
+      echo Installing runshellcode program
+      cat <<'EOF' > /tmp/runshellcode.c
+      #include <sys/types.h>
+      #include <sys/stat.h>
+      #include <sys/mman.h>
+      #include <stdlib.h>
+      #include <fcntl.h>
+      #include <unistd.h>
+      #include <stdio.h>
+      #include <string.h>
+
+      int main(int argc, char **argv) {
+        char *stack_space[0x1000];
+        int fd;
+        struct stat sbuf;
+        void (*shellcode)(void);
+        int i, z, c, bufsize, numb;
+        unsigned char *p;
+        if (argc < 2) {
+          fprintf(stderr, "Usage: %s (<filename>|-)\n", argv[0]);
+          return EXIT_FAILURE;
+        }
+
+        if (strcmp(argv[1], "-") == 0) {
+          bufsize = 4096;
+          p = malloc(bufsize);
+          z = 0;
+          numb = 0;
+          while ((c = getchar()) != EOF) {
+            if (numb == bufsize) {
+              bufsize += 4096;
+              p = realloc(p, bufsize);
+            }
+            p[numb++] = c;
+            if (c == '\0') z++;
+          }
+
+          if ((shellcode = mmap(NULL, numb, PROT_READ | PROT_EXEC | PROT_WRITE,
+                                MAP_ANONYMOUS | MAP_PRIVATE, -1, 0)) == MAP_FAILED) {
+            perror("mmap() failed");
+            return EXIT_FAILURE;
+          }
+          memcpy(shellcode, p, numb);
+          free(p);
+        } else {
+          if ((fd = open(argv[1], O_RDONLY)) < 0) {
+            perror("open() failed");
+            return EXIT_FAILURE;
+          }
+          if (fstat(fd, &sbuf)) {
+            perror("fstat() failed");
+            return EXIT_FAILURE;
+          }
+          if ((shellcode = mmap(NULL, sbuf.st_size, PROT_READ | PROT_EXEC | PROT_WRITE,
+                                MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
+            perror("mmap() failed");
+            return EXIT_FAILURE;
+          }
+
+          close(fd);
+          for (i = 0, z = 0, p = (void *)shellcode; i < sbuf.st_size; i++) {
+            if (p[i] == '\0') z++;
+          }
+          numb = sbuf.st_size;
+        }
+
+        argc--;
+        for (i = 0; i < argc; i++) {
+          argv[i] = argv[i + 1];
+        }
+
+        fprintf(stderr, "Read %d bytes of shell code. Here goes.\n", numb);
+        if (z > 0) fprintf(stderr, "Shellcode contains %d zero bytes.\n", z);
+        fprintf(stderr, "~~~ Running shellcode ~~~\n");
+
+        shellcode();
+
+        /* should not be reached */
+        return EXIT_FAILURE;
+      }
+      EOF
+      cd /tmp
+      gcc -z execstack -fno-stack-protector runshellcode.c -o /usr/bin/runshellcode
+      # rv32 build
+      "$RV32_GCC" -static -z execstack -fno-stack-protector \
+          runshellcode.c -o /usr/bin/runshellcode-riscv
+
+      # Create rv32gdb at /usr/local/bin/rv32gdb
+      echo Installing rv32gdb helper
+      cat <<'RVGDB' > /usr/local/bin/rv32gdb
+      #!/bin/sh
+      set -e
+      if [ $# -lt 1 ]; then
+        echo "usage: rv32gdb <binary> [args...]" >&2
+        exit 1
+      fi
+      PORT="${RV32GDB_PORT:-1234}"
+      BIN="$1"; shift
+      # QEMU_LD_PREFIX is set in /etc/environment, so dynamic binaries resolve too.
+      qemu-riscv32-static -g "$PORT" "$BIN" "$@" &
+      QPID=$!
+      trap 'kill "$QPID" 2>/dev/null' EXIT
+      gdb-multiarch -q "$BIN" \
+        -ex "set architecture riscv:rv32" \
+        -ex "target remote :$PORT"
+      RVGDB
+      chmod +x /usr/local/bin/rv32gdb
+
+  - mode: user
+    script: |
+      #!/bin/sh
+      set -xe
+      cat <<'EOF' > ~/.gdbinit
+      # Settings
+      set disassembly-flavor intel
+      set disable-randomization off
+      set pagination off
+      set follow-fork-mode child
+
+      # History
+      set history filename ~/.gdbhistory
+      set history save
+      set history expansion
+
+      # Output format
+      #set output-radix 0x10
+
+      # Connect to a local qemu-riscv32 gdb stub. Usage: rvconnect [port] (default 1234)
+      define rvconnect
+        set architecture riscv:rv32
+        if $argc == 0
+          target remote :1234
+        else
+          target remote :$arg0
+        end
+      end
+      document rvconnect
+      Connect gdb to a local qemu-riscv32 stub. Usage: rvconnect [port] (default 1234)
+      end
+      EOF
+      touch $HOME/.hushlogin
