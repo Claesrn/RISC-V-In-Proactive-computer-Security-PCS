@@ -4,7 +4,7 @@ PUK project - Department of Computer Science, University of Copenhagen
 
 Project by Claes Refsgaard Nielsen (jvk716) & Gustav Falck Lund (sbh198)
 
-Adapting DIKU's PCS course from **x86** to **RISC-V (RV32)** — a full
+Adapting DIKU's PCS course from **x86** to **RISC-V (RV32)** — a
 exploitation lab covering shellcode, stack attacks, and ROP, with environment
 setup, vulnerable binaries, and exploit scripts.
 
