@@ -1,7 +1,8 @@
 # Exploring RISC-V in Proactive Computer Security (PCS)
 
 PUK project - Department of Computer Science, University of Copenhagen
-Claes Refsgaard Nielsen (jvk716) & Gustav Falck Lund (sbh198)
+
+Project by Claes Refsgaard Nielsen (jvk716) & Gustav Falck Lund (sbh198)
 
 Adapting DIKU's PCS course from **x86** to **RISC-V (RV32)** — a full
 exploitation lab covering shellcode, stack attacks, and ROP, with environment
