@@ -72,6 +72,8 @@ python3 examples/rop/exploit.py
 ## Layout
 
 ```text
-env/                Vagrantfile + Lima YAML for the RV32 environment
-examples/stack/     vulnerable C binary + Python stack-attack exploit
-examples/rop/       vulnerable C binary + ROP-chain exploit
+env/                    Vagrantfile + Lima YAML for the RV32 environment
+examples/hello_world/   Simple RISC-V programs (Print Hello)
+examples/rop/           Vulnerable C binary + ROP-chain exploit
+examples/shellcode/     Example of exit shellcode program without null bytes
+examples/stack/         Vulnerable C binary + Python stack-attack exploit
