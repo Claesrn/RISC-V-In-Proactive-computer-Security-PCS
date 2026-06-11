@@ -72,7 +72,6 @@ python3 examples/rop/exploit.py
 ## Layout
 
 ```text
-report/             LaTeX write-up (formats, calling conventions, stack diagrams)
 env/                Vagrantfile + Lima YAML for the RV32 environment
 examples/stack/     vulnerable C binary + Python stack-attack exploit
 examples/rop/       vulnerable C binary + ROP-chain exploit
