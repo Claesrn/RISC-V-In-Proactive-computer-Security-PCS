@@ -20,7 +20,7 @@ limactl start ./pcs-f2026-rv32.yaml   # Apple Silicon / Lima+QEMU host
 limactl shell pcs-f2026-rv32
 ```
 
-The provisioner installs the `riscv32-glibc` cross-toolchain (as `rv32-*`),
+The environment installs the `riscv32-glibc` cross-toolchain (as `rv32-*`),
 `qemu-user-static`, `gdb-multiarch`, `ROPgadget`, `checksec`, and the
 `runshellcode-riscv` tool.
 
